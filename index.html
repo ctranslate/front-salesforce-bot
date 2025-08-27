@@ -102,7 +102,7 @@
   <script src="https://dl.frontapp.com/libs/plugin-sdk-1.8.1.min.js"></script>
   <script>
     const ZAP_URL = "https://hooks.zapier.com/hooks/catch/9441479/uthb9na/";
-    const ZAP_AI_URL = "https://hooks.zapier.com/hooks/catch/9441479/uh44g79/"; // <-- your AI Catch Hook
+    const ZAP_AI_URL = "https://hooks.zapier.com/hooks/catch/9441479/uh44g79/"; // <- your AI Catch Hook
 
 
     // Fixed quotes on "English"
@@ -187,23 +187,6 @@ function firstNonExcludedEmail(handles) {
       autoAI: $("autoAI"),
 
     };
-
-    function bindHandlersEarly() {
-  if (!el.autoAI) return;
-  if (el.autoAI.__bound) return;          // avoid double-binding
-  el.autoAI.__bound = true;
-
-  el.autoAI.addEventListener("click", async () => {
-    if (!ctxCache || (ctxCache.type !== "singleConversation" && ctxCache.type !== "conversation")) {
-      el.status.textContent = "Open a single conversation first (not list/multi-select).";
-      el.status.className = "err";
-      return;
-    }
-    // ... your existing Auto-AI code stays the same from here down ...
-  });
-}
-bindHandlersEarly();
-
 
     function buildSelectOptions(list) {
       return '<option value="" disabled selected>Select…</option>' +
@@ -305,35 +288,8 @@ function formatLocalDateTimeWithTZ(localStr, timeZone) {
 
   return "";
 }
+// Turn HTML to plain text
 function stripHtml(html) {
-  return (html || "")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-// Collect subject + concatenated message bodies (oldest→newest)
-async function collectThreadForAI(ctx) {
-  const page = await ctx.listMessages?.();
-  const msgs = page?.results || [];
-  const out = [];
-  for (const m of msgs) {
-    const role = m.direction || m.status || "";
-    const body = m?.content?.type === "html" ? stripHtml(m.content.body) : (m?.content?.body || "");
-    if (body) out.push(`[${role}] ${body}`);
-  }
-  // keep it reasonable (avoid huge payloads)
-  const text = out.join("\n\n").slice(0, 60000);
-  return {
-    subject: ctx.conversation?.subject || "",
-    thread_text: text,
-    allowed_languages: LANGUAGES.join(", ")
-  };
-}
-
-    function stripHtml(html) {
   return (html || "")
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
@@ -354,7 +310,7 @@ async function collectLatestForAI(ctx) {
     return { m, t: Number.isFinite(t) ? t : 0 };
   }).sort((a, b) => b.t - a.t);
 
-  // Prefer the newest INBOUND with a body; otherwise newest with a body
+  // Prefer newest INBOUND with a body; otherwise newest with a body
   const pick = (list) => list.find(x => x.m?.content?.body);
   const latestInbound = pick(scored.filter(x => (x.m.direction === "inbound" || x.m.status === "inbound")));
   const latest = (latestInbound || pick(scored) || {}).m;
@@ -365,60 +321,42 @@ async function collectLatestForAI(ctx) {
 
   return {
     subject: ctx.conversation?.subject || "",
-    thread_text: (body || "").slice(0, 60000),   // keep payload reasonable
+    thread_text: (body || "").slice(0, 60000),
     allowed_languages: LANGUAGES.join(", ")
   };
 }
 
 
-
-   try {
-  if (!window.Front || !Front.contextUpdates?.subscribe) {
-    el.status.textContent = "Not running inside Front (SDK not found). Open this plugin from the Front sidebar.";
-    el.status.className = "err";
-  } else {
     Front.contextUpdates.subscribe(async (ctx) => {
       ctxCache = ctx;
-      console.log("Front context:", ctx?.type, ctx);
 
-      // Capture submitter info (even if not yet in a single conversation)
+      // Who is submitting (current teammate)
       submitter.name = ctx?.teammate?.name || "";
       submitter.email = ctx?.teammate?.email || "";
       submitter.timezone = ctx?.teammate?.timezone || (Intl.DateTimeFormat().resolvedOptions().timeZone || "");
 
-      // Accept either 'singleConversation' or 'conversation'
-      if (!ctx || !ctx.conversation || (ctx.type !== "singleConversation" && ctx.type !== "conversation")) {
-        el.status.textContent = `Open a single conversation to use the form. (context: ${ctx?.type || "none"})`;
-        el.status.className = "err";
+      if (ctx?.type !== "singleConversation" || !ctx.conversation) {
+        el.status.textContent = "Open a conversation to use the form.";
         return;
       }
 
-      // Conversation info
-      el.frontId.value = ctx.conversation.id || "";
+      // Front conversation id
+      el.frontId.value = ctx.conversation.id;
+
+      // Subject
       if (!el.subject.value && ctx.conversation.subject) {
         el.subject.value = ctx.conversation.subject;
       }
 
       // Prefill Client email from first sender (robust)
-      try {
-        const detected = await detectFirstSenderEmail(ctx);
-        if (detected && !el.clientEmail.value) {
-          el.clientEmail.value = detected;
-        }
-      } catch (e) {
-        console.warn("detectFirstSenderEmail failed:", e);
-      }
-
-      el.status.textContent = "Context loaded.";
-      el.status.className = "ok";
-    });
-  }
-} catch (e) {
-  console.error(e);
-  el.status.textContent = `Plugin error: ${e?.message || e}`;
-  el.status.className = "err";
+const detected = await detectFirstSenderEmail(ctx);
+if (detected && !el.clientEmail.value) {
+  el.clientEmail.value = detected;
 }
 
+
+      el.status.textContent = "Context loaded.";
+    });
 
     function validate() {
       if (!ZAP_URL.startsWith("https://hooks.zapier.com/")) return "Set your Zapier URL in the code.";
@@ -430,57 +368,52 @@ async function collectLatestForAI(ctx) {
       if (!el.tgtLang.value) return "Target Language is required.";
       return null;
     }
-
 el.autoAI.addEventListener("click", async () => {
   try {
-    if (!ctxCache || ctxCache.type !== "singleConversation") {
+    if (!ctxCache || ctxCache.type !== "singleConversation" || !ctxCache.conversation) {
       el.status.textContent = "Open a conversation first.";
       el.status.className = "err";
       return;
     }
-    el.status.textContent = "Asking AI to parse the email…";
+    el.status.textContent = "Asking AI to parse the latest email…";
     el.status.className = "";
 
+    // Gather payload for Zap
     const payload = await collectLatestForAI(ctxCache);
+    if (el.subject.value) payload.subject = el.subject.value; // prefer what user typed
 
-    // use current subject if user typed one
-    if (el.subject.value) payload.subject = el.subject.value;
-
+    // Build form-encoded body to avoid CORS preflight
     const form = new URLSearchParams();
-form.set("subject", payload.subject || "");
-form.set("thread_text", payload.thread_text || "");
-form.set("allowed_languages", payload.allowed_languages || "");
+    form.set("subject", payload.subject || "");
+    form.set("thread_text", payload.thread_text || "");
+    form.set("allowed_languages", payload.allowed_languages || "");
 
-const res = await fetch(ZAP_AI_URL, {
-  method: "POST",
-  headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
-  body: form
-});
-const text = await res.text().catch(() => "");
-let data = {};
-try {
-  data = JSON.parse(text);
-} catch {
-  // Optional: surface the raw response to help debugging
-  console.warn("AI Zap non-JSON response:", text);
-}
-if (!res.ok) {
-  el.status.textContent = `AI Zap error: HTTP ${res.status} ${res.statusText}${text ? " — " + text.slice(0,200) : ""}`;
-  el.status.className = "err";
-  return;
-}
+    const res = await fetch(ZAP_AI_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+      body: form
+    });
 
-    if (!res.ok) throw new Error(`Zapier responded ${res.status}`);
-    const data = await res.json().catch(() => ({}));
+    const text = await res.text().catch(() => "");
+    let data = {};
+    try { data = JSON.parse(text); } catch { console.warn("AI Zap non-JSON response:", text); }
 
-    // Apply results if present (leave existing values if user already typed)
+    if (!res.ok) {
+      el.status.textContent = `AI Zap error: HTTP ${res.status} ${res.statusText}${text ? " — " + text.slice(0,200) : ""}`;
+      el.status.className = "err";
+      return;
+    }
+
+    // Apply results if present (don’t overwrite user input)
     if (data.subject && !el.subject.value) el.subject.value = data.subject;
+
     if (data.source_language && !el.srcLang.value && LANGUAGES.includes(data.source_language)) {
       el.srcLang.value = data.source_language;
     }
     if (data.target_language && !el.tgtLang.value && LANGUAGES.includes(data.target_language)) {
       el.tgtLang.value = data.target_language;
     }
+
     if (typeof data.dial_in === "string" && !el.dialIn.value) el.dialIn.value = data.dial_in.trim();
     if (typeof data.prep_materials === "string" && !el.prepMaterials.value) el.prepMaterials.value = data.prep_materials.trim();
 
@@ -493,7 +426,7 @@ if (!res.ok) {
   }
 });
 
-
+    
     // Submit handler (posts all fields as x-www-form-urlencoded)
     el.send.addEventListener("click", async () => {
       const err = validate();
