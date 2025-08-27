@@ -188,6 +188,23 @@ function firstNonExcludedEmail(handles) {
 
     };
 
+    function bindHandlersEarly() {
+  if (!el.autoAI) return;
+  if (el.autoAI.__bound) return;          // avoid double-binding
+  el.autoAI.__bound = true;
+
+  el.autoAI.addEventListener("click", async () => {
+    if (!ctxCache || (ctxCache.type !== "singleConversation" && ctxCache.type !== "conversation")) {
+      el.status.textContent = "Open a single conversation first (not list/multi-select).";
+      el.status.className = "err";
+      return;
+    }
+    // ... your existing Auto-AI code stays the same from here down ...
+  });
+}
+bindHandlersEarly();
+
+
     function buildSelectOptions(list) {
       return '<option value="" disabled selected>Select…</option>' +
         list.map(v => `<option value="${v}">${v}</option>`).join("");
@@ -355,36 +372,53 @@ async function collectLatestForAI(ctx) {
 
 
 
+   try {
+  if (!window.Front || !Front.contextUpdates?.subscribe) {
+    el.status.textContent = "Not running inside Front (SDK not found). Open this plugin from the Front sidebar.";
+    el.status.className = "err";
+  } else {
     Front.contextUpdates.subscribe(async (ctx) => {
       ctxCache = ctx;
+      console.log("Front context:", ctx?.type, ctx);
 
-      // Who is submitting (current teammate)
+      // Capture submitter info (even if not yet in a single conversation)
       submitter.name = ctx?.teammate?.name || "";
       submitter.email = ctx?.teammate?.email || "";
       submitter.timezone = ctx?.teammate?.timezone || (Intl.DateTimeFormat().resolvedOptions().timeZone || "");
 
-      if (ctx?.type !== "singleConversation" || !ctx.conversation) {
-        el.status.textContent = "Open a conversation to use the form.";
+      // Accept either 'singleConversation' or 'conversation'
+      if (!ctx || !ctx.conversation || (ctx.type !== "singleConversation" && ctx.type !== "conversation")) {
+        el.status.textContent = `Open a single conversation to use the form. (context: ${ctx?.type || "none"})`;
+        el.status.className = "err";
         return;
       }
 
-      // Front conversation id
-      el.frontId.value = ctx.conversation.id;
-
-      // Subject
+      // Conversation info
+      el.frontId.value = ctx.conversation.id || "";
       if (!el.subject.value && ctx.conversation.subject) {
         el.subject.value = ctx.conversation.subject;
       }
 
       // Prefill Client email from first sender (robust)
-const detected = await detectFirstSenderEmail(ctx);
-if (detected && !el.clientEmail.value) {
-  el.clientEmail.value = detected;
-}
-
+      try {
+        const detected = await detectFirstSenderEmail(ctx);
+        if (detected && !el.clientEmail.value) {
+          el.clientEmail.value = detected;
+        }
+      } catch (e) {
+        console.warn("detectFirstSenderEmail failed:", e);
+      }
 
       el.status.textContent = "Context loaded.";
+      el.status.className = "ok";
     });
+  }
+} catch (e) {
+  console.error(e);
+  el.status.textContent = `Plugin error: ${e?.message || e}`;
+  el.status.className = "err";
+}
+
 
     function validate() {
       if (!ZAP_URL.startsWith("https://hooks.zapier.com/")) return "Set your Zapier URL in the code.";
