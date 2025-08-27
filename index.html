@@ -1,0 +1,497 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>WorkOrder Request</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { --gap:10px; }
+    body { font-family: system-ui,-apple-system,Segoe UI,Roboto,Arial; margin:0; padding:12px; }
+    h2 { margin:0 0 10px; }
+    .row { display:grid; grid-template-columns: 160px 1fr; gap:var(--gap); align-items:center; margin-bottom:10px; }
+    .row-full { display:block; margin-bottom:10px; }
+    label { font-weight:600; }
+    input, select, textarea, button { width:100%; padding:8px; box-sizing:border-box; }
+    input[readonly] { background:#f3f4f6; }
+    textarea { min-height:120px; }
+    small { color:#6b7280; display:block; margin-top:4px; }
+    .btns { display:flex; gap:8px; margin-top:8px; }
+    button { border:0; border-radius:8px; cursor:pointer; }
+    .primary { background:#2563eb; color:white; }
+    #status { font-size:12px; color:#6b7280; margin-top:8px; }
+    .ok { color:#065f46 !important; }
+    .err { color:#7f1d1d !important; }
+  </style>
+</head>
+<body>
+  <h2>Create Request in Salesforce</h2>
+
+  <div class="row">
+  <label for="projectCode">Project Code</label>
+  <input id="projectCode" type="text"/>
+</div>
+  
+  <div class="row">
+    <label for="subject">Topic</label>
+    <div>
+      <input id="subject" type="text" placeholder='e.g., "Medical devices in China", "Breweries in Colombia"' required />
+      <small>Topic of the call. Examples: “Medical devices in China”, “Breweries in Colombia”.</small>
+    </div>
+  </div>
+
+  <div class="row">
+    <label for="frontId">FrontID</label>
+    <input id="frontId" type="text" readonly />
+  </div>
+
+  <div class="row">
+    <label for="clientEmail">Client’s Email</label>
+    <input id="clientEmail" type="email" placeholder="name@company.com" required />
+    <small>Please make sure the contact is available in Salesforce.</small>
+  </div>
+
+  <div class="row">
+    <label for="datetime">Date & Time Booking</label>
+    <input id="datetime" type="datetime-local" required />
+     <small>Enter the job date and time (using your system’s timezone).</small>
+  </div>
+
+  <div class="row">
+    <label for="serviceType">Service Type</label>
+    <select id="serviceType" required></select>
+  </div>
+
+  <div class="row">
+    <label for="srcLang">Source Language</label>
+    <select id="srcLang" required></select>
+  </div>
+
+  <div class="row">
+    <label for="tgtLang">Target Language</label>
+    <select id="tgtLang" required></select>
+  </div>
+
+  <div class="row-full">
+    <label for="description">Description</label>
+    <textarea id="description" placeholder="Add job context and any special details"></textarea>
+    <small>Use this area to provide more details about the job.</small>
+  </div>
+
+<div class="row-full">
+  <label for="dialIn">Dial-in</label>
+  <textarea id="dialIn" placeholder="Paste Zoom/Teams link, phone bridge, passcode, etc."></textarea>
+  <small>Zoom/Teams link or phone number.</small>
+</div>
+
+
+<div class="row-full">
+  <label for="prepMaterials">Prep Materials</label>
+  <textarea id="prepMaterials" placeholder="Links to decks, docs, or questions…"></textarea>
+  <small>Discussion questions or materials.</small>
+</div>
+
+
+  <div class="btns">
+    <button id="autoAI" type="button">Auto-fill with AI</button>
+    <button id="send" class="primary" type="button">Submit</button>
+  </div>
+
+  <div id="status">Waiting for conversation…</div>
+
+  <!-- Front Plugin SDK -->
+  <script src="https://dl.frontapp.com/libs/plugin-sdk-1.8.1.min.js"></script>
+  <script>
+    const ZAP_URL = "https://hooks.zapier.com/hooks/catch/9441479/uthb9na/";
+    const ZAP_AI_URL = "https://hooks.zapier.com/hooks/catch/9441479/uh44g79/"; // <-- your AI Catch Hook
+
+
+    // Fixed quotes on "English"
+    const LANGUAGES = ["English","Mandarin","Japanese","Korean","French","Spanish","Portuguese","German","EU Portuguese","EU French","EU Spanish",
+      "Afrikaans","Amazigh","Amharic","Arabic","Asturian","Azerbaijani","Bahasa Indonesia","Balinese","Basque","Brazilian Portuguese",
+      "Bengali","Bosnian","Bulgarian","Burmese","Canadian French","Cantonese","Catalan","Creole","Croatian","Czech",
+      "Danish","Dari","Dutch","Esperanto","Estonian","Farsi","Finnish","Flemish","Georgian","Greek",
+      "Gujarati","Hakka","Hebrew","Hindi","Hmong","Hokkien","Hungarian","Italian","Javanese","Kannada",
+      "Khmer","Kurdish","Latin American Spanish","Lao","Lithuanian","Macedonian","Malay","Chinese (Hongkong)","Marathi","Marshallese",
+      "Mongolian","Nepalese","Norwegian","Pashto","Persian","Polish","Punjabi","Romanian","Russian","Scots",
+      "Serbian","Sinhalese","Slavic","Slovak","Somali","Sundanese","Swahili","Swedish","Tagalog","Taiwanese",
+      "Tamil","Telugu","Teochew","Thai","Turkish","Ukrainian","Urdu","Uyghur","Vietnamese","Other"];
+
+    const SERVICE_TYPES = ["[CI] Interpret a call (industry discussion)",
+      "[CI] Interpret a call (IR / management team)",
+      "[CI] Interpret an on-site meeting",
+      "[SI] Interpret a call (industry discussion)",
+      "[SI] Interpret a call (IR / management team)",
+      "[SI] Interpret an on-site meeting",
+      "[SI] Interpret a call solo (industry discussion)",
+      "[SI] Interpret a call solo (IR / management team)",
+      "[SI] Interpret an on-site meeting solo",
+      "Translate a document",
+      "Translate a survey",
+      "HITL",
+      "HITL Lite",
+      "Machine",
+      "HITL Verbatim",
+      "[IDI] Moderate a call",
+      "[FGD] Moderate a call",
+      "Briefing - Moderation",
+      "Briefing - Interpretation",
+      "[Other] Bespoke services"];
+
+    // Exclude any addresses under these domains (e.g., all @cadencetranslate.com)
+const EXCLUDE_CLIENT_DOMAINS = ["cadencetranslate.com"];
+
+
+    // === Exclude internal addresses from 'Client’s email' auto-fill ===
+const EXCLUDE_CLIENT_EMAILS = ["bookings@cadencetranslate.com"];
+
+function firstNonExcludedEmail(handles) {
+  const EXCLUDE = new Set(EXCLUDE_CLIENT_EMAILS.map(s => s.toLowerCase()));
+  const EXCLUDE_DOMAINS = new Set(EXCLUDE_CLIENT_DOMAINS.map(s => s.toLowerCase()));
+
+  const extractEmail = (s) => {
+    if (typeof s !== "string") return "";
+    // Supports plain emails or "Name <email@domain>"
+    const m = s.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+    return m ? m[0].toLowerCase().trim() : "";
+  };
+
+  for (const h of handles || []) {
+    const email = extractEmail(h);
+    if (!email) continue;
+
+    if (EXCLUDE.has(email)) continue; // exact-address exclude
+    const domain = email.split("@")[1];
+    if (EXCLUDE_DOMAINS.has(domain)) continue; // domain-wide exclude
+
+    return email; // first non-excluded email wins
+  }
+  return "";
+}
+
+
+    const $ = id => document.getElementById(id);
+    const el = {
+      subject: $("subject"),
+      frontId: $("frontId"),
+      clientEmail: $("clientEmail"),
+      datetime: $("datetime"),
+      serviceType: $("serviceType"),
+      srcLang: $("srcLang"),
+      tgtLang: $("tgtLang"),
+      description: $("description"),
+      send: $("send"),
+      status: $("status"),
+      projectCode: $("projectCode"),
+      dialIn: $("dialIn"),
+      prepMaterials: $("prepMaterials"),
+      autoAI: $("autoAI"),
+
+    };
+
+    function buildSelectOptions(list) {
+      return '<option value="" disabled selected>Select…</option>' +
+        list.map(v => `<option value="${v}">${v}</option>`).join("");
+    }
+    function fillSelects() {
+      el.srcLang.innerHTML = buildSelectOptions(LANGUAGES);
+      el.tgtLang.innerHTML = buildSelectOptions(LANGUAGES);
+      el.serviceType.innerHTML = buildSelectOptions(SERVICE_TYPES);
+    }
+    fillSelects();
+
+    // ——— submitter info (Front teammate using the plugin)
+    let submitter = { name: "", email: "", timezone: "" };
+
+    // Formats "YYYY-MM-DDTHH:MM" -> "YYYY-MM-DDTHH:MM:00.000±HH:MM" using a specific IANA timeZone
+function formatLocalDateTimeWithTZ(localStr, timeZone) {
+  if (!localStr) return "";
+  const [datePart, timePartRaw = "00:00"] = localStr.split("T");
+  let [hh = "00", mm = "00", ss = "00"] = timePartRaw.split(":");
+  if (!ss) ss = "00";
+  const [Y, M, D] = datePart.split("-").map(n => parseInt(n, 10));
+  const pad2 = v => String(v).padStart(2, "0");
+
+  // Anchor at the same wall time in UTC, then ask Intl for the zone offset at that instant
+  const utcLike = new Date(Date.UTC(Y, M - 1, D, parseInt(hh,10), parseInt(mm,10), parseInt(ss,10), 0));
+
+  let off = "";
+  try {
+    const dtf = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      timeZoneName: "shortOffset",
+      hour12: false,
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit"
+    });
+    const parts = dtf.formatToParts(utcLike);
+    const tzName = parts.find(p => p.type === "timeZoneName")?.value || ""; // e.g., "GMT+7"
+    const m = tzName.match(/GMT([+-])(\d{1,2})(?::(\d{2}))?/);
+    if (m) off = `${m[1]}${String(m[2]).padStart(2,"0")}:${(m[3]||"00").padStart(2,"0")}`;
+  } catch (_) {}
+
+  // Fallback to browser offset if shortOffset unsupported
+  if (!off) {
+    const tzMinutes = -utcLike.getTimezoneOffset();
+    const sign = tzMinutes >= 0 ? "+" : "-";
+    const offH = pad2(Math.trunc(Math.abs(tzMinutes) / 60));
+    const offM = pad2(Math.abs(tzMinutes) % 60);
+    off = `${sign}${offH}:${offM}`;
+  }
+
+  return `${datePart}T${pad2(hh)}:${pad2(mm)}:${pad2(ss)}.000${off}`;
+}
+
+
+    let ctxCache = null;
+   async function detectFirstSenderEmail(ctx) {
+  // Try messages (oldest inbound first)
+  try {
+    const page = await ctx.listMessages?.();
+    const msgs = page?.results || [];
+
+    const parsed = msgs
+      .filter(m => (m.direction === "inbound" || m.status === "inbound"))
+      .map(m => {
+        const raw = m.created_at || m.received_at || m.date || m.inserted_at || m.createdAt || "";
+        const t = Date.parse(raw);
+        return { m, t: Number.isFinite(t) ? t : Number.POSITIVE_INFINITY };
+      })
+      .sort((a, b) => a.t - b.t);
+
+    for (const { m } of parsed) {
+      // Gather possible From/To sources on the message
+      const candidates = [
+        m.author?.handle,
+        m.sender?.handle,
+        m.recipient?.handle,
+        ...(Array.isArray(m.recipients) ? m.recipients.map(r => r?.handle) : []),
+        ...(Array.isArray(m.to) ? m.to.map(x => x?.handle || x?.address) : []),
+        ...(Array.isArray(m.cc) ? m.cc.map(x => x?.handle || x?.address) : []),
+      ].filter(Boolean);
+
+      const email = firstNonExcludedEmail(candidates);
+      if (email) return email;
+    }
+  } catch { /* ignore */ }
+
+  // Fallback: conversation participants (exclude teammates and blocked address)
+  try {
+    const recips = await ctx.listRecipients?.();
+    const arr = recips?.results || [];
+    const email = firstNonExcludedEmail(
+      arr
+        .filter(r => r.handle?.includes("@") && r.type !== "teammate")
+        .map(r => r.handle)
+    );
+    if (email) return email;
+  } catch { /* ignore */ }
+
+  return "";
+}
+function stripHtml(html) {
+  return (html || "")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Collect subject + concatenated message bodies (oldest→newest)
+async function collectThreadForAI(ctx) {
+  const page = await ctx.listMessages?.();
+  const msgs = page?.results || [];
+  const out = [];
+  for (const m of msgs) {
+    const role = m.direction || m.status || "";
+    const body = m?.content?.type === "html" ? stripHtml(m.content.body) : (m?.content?.body || "");
+    if (body) out.push(`[${role}] ${body}`);
+  }
+  // keep it reasonable (avoid huge payloads)
+  const text = out.join("\n\n").slice(0, 60000);
+  return {
+    subject: ctx.conversation?.subject || "",
+    thread_text: text,
+    allowed_languages: LANGUAGES.join(", ")
+  };
+}
+
+    function stripHtml(html) {
+  return (html || "")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Collect ONLY the latest email body (prefer latest INBOUND)
+async function collectLatestForAI(ctx) {
+  const page = await ctx.listMessages?.();
+  const msgs = page?.results || [];
+
+  // Sort newest → oldest using any available timestamp
+  const scored = msgs.map(m => {
+    const raw = m.created_at || m.received_at || m.date || m.inserted_at || m.createdAt || "";
+    const t = Date.parse(raw);
+    return { m, t: Number.isFinite(t) ? t : 0 };
+  }).sort((a, b) => b.t - a.t);
+
+  // Prefer the newest INBOUND with a body; otherwise newest with a body
+  const pick = (list) => list.find(x => x.m?.content?.body);
+  const latestInbound = pick(scored.filter(x => (x.m.direction === "inbound" || x.m.status === "inbound")));
+  const latest = (latestInbound || pick(scored) || {}).m;
+
+  const body = latest?.content?.type === "html"
+    ? stripHtml(latest.content.body)
+    : (latest?.content?.body || "");
+
+  return {
+    subject: ctx.conversation?.subject || "",
+    thread_text: (body || "").slice(0, 60000),   // keep payload reasonable
+    allowed_languages: LANGUAGES.join(", ")
+  };
+}
+
+
+
+    Front.contextUpdates.subscribe(async (ctx) => {
+      ctxCache = ctx;
+
+      // Who is submitting (current teammate)
+      submitter.name = ctx?.teammate?.name || "";
+      submitter.email = ctx?.teammate?.email || "";
+      submitter.timezone = ctx?.teammate?.timezone || (Intl.DateTimeFormat().resolvedOptions().timeZone || "");
+
+      if (ctx?.type !== "singleConversation" || !ctx.conversation) {
+        el.status.textContent = "Open a conversation to use the form.";
+        return;
+      }
+
+      // Front conversation id
+      el.frontId.value = ctx.conversation.id;
+
+      // Subject
+      if (!el.subject.value && ctx.conversation.subject) {
+        el.subject.value = ctx.conversation.subject;
+      }
+
+      // Prefill Client email from first sender (robust)
+const detected = await detectFirstSenderEmail(ctx);
+if (detected && !el.clientEmail.value) {
+  el.clientEmail.value = detected;
+}
+
+
+      el.status.textContent = "Context loaded.";
+    });
+
+    function validate() {
+      if (!ZAP_URL.startsWith("https://hooks.zapier.com/")) return "Set your Zapier URL in the code.";
+      if (!el.subject.value.trim()) return "Subject is required.";
+      if (!el.clientEmail.value.trim()) return "Client’s email is required.";
+      if (!el.datetime.value.trim()) return "Date & time is required.";
+      if (!el.serviceType.value) return "Service Type is required.";
+      if (!el.srcLang.value) return "Source Language is required.";
+      if (!el.tgtLang.value) return "Target Language is required.";
+      return null;
+    }
+
+el.autoAI.addEventListener("click", async () => {
+  try {
+    if (!ctxCache || ctxCache.type !== "singleConversation") {
+      el.status.textContent = "Open a conversation first.";
+      el.status.className = "err";
+      return;
+    }
+    el.status.textContent = "Asking AI to parse the email…";
+    el.status.className = "";
+
+    const payload = await collectLatestForAI(ctxCache);
+
+    // use current subject if user typed one
+    if (el.subject.value) payload.subject = el.subject.value;
+
+    const res = await fetch(ZAP_AI_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) throw new Error(`Zapier responded ${res.status}`);
+    const data = await res.json().catch(() => ({}));
+
+    // Apply results if present (leave existing values if user already typed)
+    if (data.subject && !el.subject.value) el.subject.value = data.subject;
+    if (data.source_language && !el.srcLang.value && LANGUAGES.includes(data.source_language)) {
+      el.srcLang.value = data.source_language;
+    }
+    if (data.target_language && !el.tgtLang.value && LANGUAGES.includes(data.target_language)) {
+      el.tgtLang.value = data.target_language;
+    }
+    if (typeof data.dial_in === "string" && !el.dialIn.value) el.dialIn.value = data.dial_in.trim();
+    if (typeof data.prep_materials === "string" && !el.prepMaterials.value) el.prepMaterials.value = data.prep_materials.trim();
+
+    el.status.textContent = "Auto-filled by AI. Please review and edit if needed.";
+    el.status.className = "ok";
+  } catch (e) {
+    el.status.textContent = "AI auto-fill failed. You can still submit manually.";
+    el.status.className = "err";
+    console.error(e);
+  }
+});
+
+
+    // Submit handler (posts all fields as x-www-form-urlencoded)
+    el.send.addEventListener("click", async () => {
+      const err = validate();
+      if (err) { el.status.textContent = err; el.status.className = "err"; return; }
+
+      // Format datetime with submitter's offset (e.g., 2023-07-03T14:30:00.000+08:00)
+      const tz = submitter.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+const datetimeWithTZ = formatLocalDateTimeWithTZ(el.datetime.value, tz);
+
+
+      const body = new URLSearchParams();
+      body.set("subject", el.subject.value.trim());
+      body.set("front_id", el.frontId.value || "");
+      if (el.frontId.value) body.set("conversation_url", `https://app.frontapp.com/open/c/${el.frontId.value}`);
+      body.set("client_email", el.clientEmail.value.trim());
+      body.set("datetime_local", datetimeWithTZ); // <-- formatted with offset
+      body.set("service_type", el.serviceType.value);
+      body.set("source_language", el.srcLang.value);
+      body.set("target_language", el.tgtLang.value);
+      body.set("description", el.description.value.trim());
+      body.set("submitter_name", submitter.name);
+      body.set("submitter_email", submitter.email);
+      body.set("submitter_timezone", submitter.timezone); // IANA, e.g., "Asia/Singapore";
+      body.set("project_code", el.projectCode.value.trim());
+      body.set("dial_in", el.dialIn.value.trim());
+      body.set("prep_materials", el.prepMaterials.value.trim())
+
+
+      el.status.textContent = "Sending…";
+      el.status.className = "";
+
+      try {
+        const res = await fetch(ZAP_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+          body
+        });
+
+        const text = await res.text().catch(() => "");
+        if (!res.ok) {
+          el.status.textContent = `Submit failed: HTTP ${res.status} ${res.statusText}${text ? " — " + text : ""}`;
+          el.status.className = "err";
+          return;
+        }
+        el.status.textContent = "Submitted successfully. Please review the internal comment in this thread and verify that all request details in Salesforce are correct.";
+        el.status.className = "ok";
+      } catch (e) {
+        el.status.textContent = `Network/CORS error: ${e?.message || e}`;
+        el.status.className = "err";
+      }
+    });
+  </script>
+</body>
+</html>
