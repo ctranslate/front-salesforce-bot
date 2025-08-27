@@ -412,11 +412,30 @@ el.autoAI.addEventListener("click", async () => {
     // use current subject if user typed one
     if (el.subject.value) payload.subject = el.subject.value;
 
-    const res = await fetch(ZAP_AI_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
+    const form = new URLSearchParams();
+form.set("subject", payload.subject || "");
+form.set("thread_text", payload.thread_text || "");
+form.set("allowed_languages", payload.allowed_languages || "");
+
+const res = await fetch(ZAP_AI_URL, {
+  method: "POST",
+  headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+  body: form
+});
+const text = await res.text().catch(() => "");
+let data = {};
+try {
+  data = JSON.parse(text);
+} catch {
+  // Optional: surface the raw response to help debugging
+  console.warn("AI Zap non-JSON response:", text);
+}
+if (!res.ok) {
+  el.status.textContent = `AI Zap error: HTTP ${res.status} ${res.statusText}${text ? " — " + text.slice(0,200) : ""}`;
+  el.status.className = "err";
+  return;
+}
+
     if (!res.ok) throw new Error(`Zapier responded ${res.status}`);
     const data = await res.json().catch(() => ({}));
 
