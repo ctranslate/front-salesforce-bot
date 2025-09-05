@@ -21,6 +21,11 @@
     #status { font-size:12px; color:#6b7280; margin-top:8px; }
     .ok { color:#065f46 !important; }
     .err { color:#7f1d1d !important; }
+    /* --- AI suggestions UI --- */
+.suggest-chip{margin-top:6px;padding:8px;border:1px dashed #bbb;border-radius:8px;background:#fafafa;}
+.suggest-ghost{font-size:12px;opacity:.85;margin-bottom:6px;white-space:pre-wrap;}
+.suggest-btn{font-size:12px;padding:6px 10px;border-radius:6px;border:1px solid #ddd;background:#fff;cursor:pointer}
+.suggest-btn:hover{background:#f2f2f2}
   </style>
 </head>
 <body>
@@ -92,7 +97,6 @@
 
 
   <div class="btns">
-    <button id="autoAI" type="button">Auto-fill with AI</button>
     <button id="send" class="primary" type="button">Submit</button>
   </div>
 
@@ -102,7 +106,13 @@
   <script src="https://dl.frontapp.com/libs/plugin-sdk-1.8.1.min.js"></script>
   <script>
     const ZAP_URL = "https://hooks.zapier.com/hooks/catch/9441479/uthb9na/";
-    const ZAP_AI_URL = "https://hooks.zapier.com/hooks/catch/9441479/uh44g79/"; // <- your AI Catch Hook
+
+    // === Extractor (LLM) Endpoint ===
+const EXTRACTOR_URL = "https://g4jaycxj27ds6u62hdgize7lre0czbmu.lambda-url.us-west-2.on.aws/"; // <-- PUT YOUR LAMBDA URL
+
+// Confidence thresholds
+const CONF_AUTO = 0.75;   // auto-fill at/above
+const CONF_SUGG = 0.50;   // suggest between 0.50–0.74
 
 
     // Fixed quotes on "English"
@@ -184,7 +194,6 @@ function firstNonExcludedEmail(handles) {
       projectCode: $("projectCode"),
       dialIn: $("dialIn"),
       prepMaterials: $("prepMaterials"),
-      autoAI: $("autoAI"),
 
     };
 
@@ -288,75 +297,204 @@ function formatLocalDateTimeWithTZ(localStr, timeZone) {
 
   return "";
 }
-// Turn HTML to plain text
-function stripHtml(html) {
-  return (html || "")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+// Mark fields as "user-edited" so we never overwrite their manual input
+function markUserEdited(el){ el.dataset.userEdited = "1"; }
+[
+  el.subject, el.srcLang, el.tgtLang, el.description, el.dialIn, el.prepMaterials, el.projectCode
+].forEach(x => x && x.addEventListener("input", () => markUserEdited(x)));
+
+// Safe setters: only fill if empty & not user-edited
+function setIfEmptyInput(el, val){
+  if (!el || val == null) return;
+  const already = (el.value || "").trim().length > 0;
+  const edited = el.dataset.userEdited === "1";
+  if (!already && !edited) el.value = String(val);
 }
 
-// Collect ONLY the latest email body (prefer latest INBOUND)
-async function collectLatestForAI(ctx) {
-  const page = await ctx.listMessages?.();
-  const msgs = page?.results || [];
+function setSelectIfEmpty(el, val){
+  if (!el || !val) return;
+  const edited = el.dataset.userEdited === "1";
+  if (edited) return;
 
-  // Sort newest → oldest using any available timestamp
-  const scored = msgs.map(m => {
-    const raw = m.created_at || m.received_at || m.date || m.inserted_at || m.createdAt || "";
-    const t = Date.parse(raw);
-    return { m, t: Number.isFinite(t) ? t : 0 };
-  }).sort((a, b) => b.t - a.t);
-
-  // Prefer newest INBOUND with a body; otherwise newest with a body
-  const pick = (list) => list.find(x => x.m?.content?.body);
-  const latestInbound = pick(scored.filter(x => (x.m.direction === "inbound" || x.m.status === "inbound")));
-  const latest = (latestInbound || pick(scored) || {}).m;
-
-  const body = latest?.content?.type === "html"
-    ? stripHtml(latest.content.body)
-    : (latest?.content?.body || "");
-
-  return {
-    subject: ctx.conversation?.subject || "",
-    thread_text: (body || "").slice(0, 60000),
-    allowed_languages: LANGUAGES.join(", ")
-  };
+  // try exact match first (case-sensitive)
+  const opts = Array.from(el.options);
+  let found = opts.find(o => o.value === val);
+  // try case-insensitive exact
+  if (!found) found = opts.find(o => o.value.toLowerCase() === String(val).toLowerCase());
+  // try contains either way
+  if (!found) found = opts.find(o =>
+    o.value.toLowerCase().includes(String(val).toLowerCase()) ||
+    String(val).toLowerCase().includes(o.value.toLowerCase())
+  );
+  if (found && !el.value) el.value = found.value;
 }
 
+// Suggestion chips (for 0.50–0.74 confidence)
+function attachSuggestion(el, val, evidence=[]){
+  if (!el || !val) return;
+  // prevent duplicates
+  if (el.parentElement.querySelector(".suggest-chip")) return;
 
-    Front.contextUpdates.subscribe(async (ctx) => {
-      ctxCache = ctx;
+  const wrap = document.createElement("div");
+  wrap.className = "suggest-chip";
+  wrap.title = evidence && evidence.length ? ("Why: " + evidence.slice(0,2).join(" | ")) : "";
 
-      // Who is submitting (current teammate)
-      submitter.name = ctx?.teammate?.name || "";
-      submitter.email = ctx?.teammate?.email || "";
-      submitter.timezone = ctx?.teammate?.timezone || (Intl.DateTimeFormat().resolvedOptions().timeZone || "");
+  const ghost = document.createElement("div");
+  ghost.className = "suggest-ghost";
+  ghost.textContent = String(val).slice(0, 500);
 
-      if (ctx?.type !== "singleConversation" || !ctx.conversation) {
-        el.status.textContent = "Open a conversation to use the form.";
-        return;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "suggest-btn";
+  btn.textContent = "Accept suggestion";
+  btn.addEventListener("click", () => {
+    if (el.tagName === "SELECT") {
+      setSelectIfEmpty(el, val);
+      // if still not matched, set raw value (so user sees it; or leave as is)
+      if (!el.value) {
+        // no-op; you could also append a temp <option> if you want
       }
+    } else {
+      el.value = String(val);
+    }
+    markUserEdited(el);
+    wrap.remove();
+  });
 
-      // Front conversation id
-      el.frontId.value = ctx.conversation.id;
-
-      // Subject
-      if (!el.subject.value && ctx.conversation.subject) {
-        el.subject.value = ctx.conversation.subject;
-      }
-
-      // Prefill Client email from first sender (robust)
-const detected = await detectFirstSenderEmail(ctx);
-if (detected && !el.clientEmail.value) {
-  el.clientEmail.value = detected;
+  wrap.appendChild(ghost);
+  wrap.appendChild(btn);
+  el.parentElement.appendChild(wrap);
 }
 
+// Apply a single field from extractor payload to an input/select with thresholds
+function applyField(el, fieldObj){
+  if (!el || !fieldObj) return;
+  const val = fieldObj.value;
+  const conf = typeof fieldObj.confidence === "number" ? fieldObj.confidence : 0;
+  const evidence = Array.isArray(fieldObj.evidence) ? fieldObj.evidence : [];
 
-      el.status.textContent = "Context loaded.";
-    });
+  if (!val) return;
+
+  if (conf >= CONF_AUTO) {
+    if (el.tagName === "SELECT") setSelectIfEmpty(el, val);
+    else setIfEmptyInput(el, val);
+  } else if (conf >= CONF_SUGG) {
+    attachSuggestion(el, val, evidence);
+  }
+}
+async function fetchExtraction({ subject, bodyPlain, bodyHtml, senderEmail }){
+  const res = await fetch(EXTRACTOR_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ subject, bodyPlain, bodyHtml, senderEmail })
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(()=> "");
+    throw new Error(`Extractor HTTP ${res.status} ${res.statusText} ${t}`);
+  }
+  return res.json();
+}
+
+function applyExtraction(payload){
+  const f = payload?.fields || {};
+  // Your exact IDs
+  applyField(el.subject,       f.subject);
+  applyField(el.srcLang,       f.source_language);
+  applyField(el.tgtLang,       f.target_language);
+  applyField(el.description,   f.description);
+  applyField(el.dialIn,        f.dial_in_block);
+  applyField(el.prepMaterials, f.prep_materials);
+
+  // Optional: project code (#1595297 most useful for humans)
+  if (f.projectcode_raw?.value) applyField(el.projectCode, f.projectcode_raw);
+  else if (f.request_id?.value) applyField(el.projectCode, { value: `#${f.request_id.value}`, confidence: f.request_id.confidence ?? 0.7, evidence: f.request_id.evidence });
+}
+
+// Public trigger (you’ll call this after you collect the latest inbound body)
+async function autoFillFromEmail({ subject, bodyPlain, bodyHtml, senderEmail }){
+  try {
+    const data = await fetchExtraction({ subject, bodyPlain, bodyHtml, senderEmail });
+    applyExtraction(data);
+  } catch (e) {
+    console.warn("Extractor failed:", e);
+  }
+}
+// Get latest inbound message text (plain/HTML best-effort)
+async function getLatestInboundContent(ctx){
+  try {
+    const page = await ctx.listMessages?.();
+    const msgs = page?.results || [];
+
+    // newest first
+    const inbound = msgs
+      .filter(m => (m.direction === "inbound" || m.status === "inbound"))
+      .sort((a,b) => {
+        const ta = Date.parse(a.created_at || a.received_at || a.date || a.inserted_at || a.createdAt || 0);
+        const tb = Date.parse(b.created_at || b.received_at || b.date || b.inserted_at || b.createdAt || 0);
+        return tb - ta;
+      });
+
+    for (const m of inbound) {
+      // Common fields that may exist depending on channel:
+      const bodyPlain = m.text || m.body || m.blurb || "";
+      const bodyHtml  = m.html || "";
+      if (bodyPlain || bodyHtml) return { bodyPlain, bodyHtml };
+    }
+  } catch (e) {
+    console.warn("Could not list messages:", e);
+  }
+  return { bodyPlain: "", bodyHtml: "" };
+}
+
+let lastAutoFillConvId = null;
+
+Front.contextUpdates.subscribe(async (ctx) => {
+  ctxCache = ctx;
+
+  // submitter (unchanged)
+  submitter.name = ctx?.teammate?.name || "";
+  submitter.email = ctx?.teammate?.email || "";
+  submitter.timezone = ctx?.teammate?.timezone || (Intl.DateTimeFormat().resolvedOptions().timeZone || "");
+
+  if (ctx?.type !== "singleConversation" || !ctx.conversation) {
+    el.status.textContent = "Open a conversation to use the form.";
+    return;
+  }
+
+  // Front conversation id
+  el.frontId.value = ctx.conversation.id;
+
+  // Subject (prefill from conversation if empty)
+  if (!el.subject.value && ctx.conversation.subject) {
+    el.subject.value = ctx.conversation.subject;
+  }
+
+  // Prefill Client email from first sender (you already had this)
+  const detected = await detectFirstSenderEmail(ctx);
+  if (detected && !el.clientEmail.value) {
+    el.clientEmail.value = detected;
+  }
+
+  el.status.textContent = "Context loaded.";
+
+  // === NEW: call extractor once per conversation ===
+  try {
+    if (lastAutoFillConvId !== ctx.conversation.id) {
+      const { bodyPlain, bodyHtml } = await getLatestInboundContent(ctx);
+      const subjForExtractor = el.subject.value || ctx.conversation.subject || "";
+      await autoFillFromEmail({
+        subject: subjForExtractor,
+        bodyPlain,
+        bodyHtml,
+        senderEmail: detected || ""
+      });
+      lastAutoFillConvId = ctx.conversation.id;
+    }
+  } catch (e) {
+    console.warn("Auto-fill error:", e);
+  }
+});
+
 
     function validate() {
       if (!ZAP_URL.startsWith("https://hooks.zapier.com/")) return "Set your Zapier URL in the code.";
@@ -368,65 +506,7 @@ if (detected && !el.clientEmail.value) {
       if (!el.tgtLang.value) return "Target Language is required.";
       return null;
     }
-el.autoAI.addEventListener("click", async () => {
-  try {
-    if (!ctxCache || ctxCache.type !== "singleConversation" || !ctxCache.conversation) {
-      el.status.textContent = "Open a conversation first.";
-      el.status.className = "err";
-      return;
-    }
-    el.status.textContent = "Asking AI to parse the latest email…";
-    el.status.className = "";
 
-    // Gather payload for Zap
-    const payload = await collectLatestForAI(ctxCache);
-    if (el.subject.value) payload.subject = el.subject.value; // prefer what user typed
-
-    // Build form-encoded body to avoid CORS preflight
-    const form = new URLSearchParams();
-    form.set("subject", payload.subject || "");
-    form.set("thread_text", payload.thread_text || "");
-    form.set("allowed_languages", payload.allowed_languages || "");
-
-    const res = await fetch(ZAP_AI_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
-      body: form
-    });
-
-    const text = await res.text().catch(() => "");
-    let data = {};
-    try { data = JSON.parse(text); } catch { console.warn("AI Zap non-JSON response:", text); }
-
-    if (!res.ok) {
-      el.status.textContent = `AI Zap error: HTTP ${res.status} ${res.statusText}${text ? " — " + text.slice(0,200) : ""}`;
-      el.status.className = "err";
-      return;
-    }
-
-    // Apply results if present (don’t overwrite user input)
-    if (data.subject && !el.subject.value) el.subject.value = data.subject;
-
-    if (data.source_language && !el.srcLang.value && LANGUAGES.includes(data.source_language)) {
-      el.srcLang.value = data.source_language;
-    }
-    if (data.target_language && !el.tgtLang.value && LANGUAGES.includes(data.target_language)) {
-      el.tgtLang.value = data.target_language;
-    }
-
-    if (typeof data.dial_in === "string" && !el.dialIn.value) el.dialIn.value = data.dial_in.trim();
-    if (typeof data.prep_materials === "string" && !el.prepMaterials.value) el.prepMaterials.value = data.prep_materials.trim();
-
-    el.status.textContent = "Auto-filled by AI. Please review and edit if needed.";
-    el.status.className = "ok";
-  } catch (e) {
-    el.status.textContent = "AI auto-fill failed. You can still submit manually.";
-    el.status.className = "err";
-    console.error(e);
-  }
-});
-
-    
     // Submit handler (posts all fields as x-www-form-urlencoded)
     el.send.addEventListener("click", async () => {
       const err = validate();
